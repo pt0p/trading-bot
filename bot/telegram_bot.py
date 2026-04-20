@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from urllib.parse import urlparse
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -289,6 +291,24 @@ def _format_iso(d: date) -> str:
     """
 
     return d.isoformat()
+
+
+def _format_human_date(value: date | str) -> str:
+    """Преобразует дату в строку ``ДД.ММ.ГГГГ`` для пользовательских сообщений.
+
+    Parameters
+    ----------
+    value : date or str
+        Экземпляр ``date`` или ISO-строка ``YYYY-MM-DD``.
+
+    Returns
+    -------
+    str
+        Дата в человекочитаемом формате.
+    """
+
+    parsed = value if isinstance(value, date) else date.fromisoformat(value)
+    return parsed.strftime("%d.%m.%Y")
 
 
 class TradingTelegramBot:
@@ -647,8 +667,12 @@ class TradingTelegramBot:
             caption=f"Стратегия «{strategy_display_name('greedy')}»: кривые портфеля по моделям",
         )
 
-        profit_text = self._format_profit_summary(result.evaluation.summary_json)
-        await context.bot.send_message(chat_id=chat_id, text=profit_text)
+        profit_text = self._format_profit_summary(
+            result=result,
+            requested_start_date=start_date,
+            requested_end_date=end_date,
+        )
+        await self._send_html_message(context=context, chat_id=chat_id, text=profit_text)
 
         try:
             user_data = _require_user_data(context)
@@ -687,23 +711,80 @@ class TradingTelegramBot:
         plt.close(figure)
         await context.bot.send_photo(chat_id=chat_id, photo=buffer, caption=caption)
 
-    def _format_profit_summary(self, summary_json: dict[str, dict[str, float]]) -> str:
+    async def _send_html_message(
+        self,
+        *,
+        context: ContextTypes.DEFAULT_TYPE,
+        chat_id: int,
+        text: str,
+    ) -> None:
+        """Отправляет сообщение с HTML-разметкой в Telegram.
+
+        Parameters
+        ----------
+        context : ContextTypes.DEFAULT_TYPE
+            Контекст выполнения PTB.
+        chat_id : int
+            Идентификатор чата для отправки.
+        text : str
+            HTML-текст сообщения.
+        """
+
+        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+
+    def _format_profit_summary(
+        self,
+        *,
+        result: PipelineResult,
+        requested_start_date: date,
+        requested_end_date: date,
+    ) -> str:
         """Формирует текст со сводкой прибыли по стратегиям и моделям.
 
         Parameters
         ----------
-        summary_json : dict[str, dict[str, float]]
-            Структура из ``EvaluationResult.summary_json``.
+        result : PipelineResult
+            Результат production-пайплайна с итоговыми метриками и фактическим окном расчёта.
+        requested_start_date : date
+            Запрошенная пользователем дата начала периода.
+        requested_end_date : date
+            Запрошенная пользователем дата конца периода.
 
         Returns
         -------
         str
-            Текст сообщения для пользователя.
+            HTML-текст сообщения для пользователя.
         """
 
-        lines: list[str] = ["📈 *СВОДКА ПРИБЫЛИ!*:"]
-        for strategy_key, profits in summary_json.items():
-            strategy_label = strategy_display_name(strategy_key)
+        requested_start_iso = _format_iso(requested_start_date)
+        requested_end_iso = _format_iso(requested_end_date)
+        effective_window = result.effective_window
+
+        lines: list[str] = [
+            "📈 <b>СВОДКА ПРИБЫЛИ!</b>",
+            (
+                "Запрошенный период: "
+                f"{html.escape(_format_human_date(requested_start_date))} - "
+                f"{html.escape(_format_human_date(requested_end_date))}"
+            ),
+        ]
+        if (
+            effective_window.start_date != requested_start_iso
+            or effective_window.end_date != requested_end_iso
+        ):
+            lines.extend(
+                [
+                    (
+                        "Фактический период расчёта: "
+                        f"{html.escape(_format_human_date(effective_window.start_date))} - "
+                        f"{html.escape(_format_human_date(effective_window.end_date))}"
+                    ),
+                    "Период сужен до общего диапазона реализованной доходности по всем моделям.",
+                ]
+            )
+
+        for strategy_key, profits in result.evaluation.summary_json.items():
+            strategy_label = html.escape(strategy_display_name(strategy_key))
             lines.append(f"\nСтратегия «{strategy_label}»:")
             if not profits:
                 lines.append("  (нет данных)")
@@ -711,15 +792,18 @@ class TradingTelegramBot:
             best_model_key: str | None = None
             best_profit: float | None = None
             for model_key, profit in profits.items():
-                model_label = model_display_name(str(model_key))
-                lines.append(f"  • {model_label}: `{profit:,.2f} ₽`".replace(",", " ").replace(".", ","))
+                model_label = html.escape(model_display_name(str(model_key)))
+                formatted_profit = f"{profit:,.2f} ₽".replace(",", " ").replace(".", ",")
+                lines.append(f"  • {model_label}: <code>{html.escape(formatted_profit)}</code>")
                 if best_profit is None or float(profit) > float(best_profit):
                     best_profit = float(profit)
                     best_model_key = str(model_key)
             if best_model_key is not None and best_profit is not None:
-                best_label = model_display_name(best_model_key)
+                best_label = html.escape(model_display_name(best_model_key))
+                formatted_best_profit = f"{best_profit:,.2f} ₽".replace(",", " ").replace(".", ",")
                 lines.append(
-                    f"*Лучшая модель по прибыли:* {best_label} (`{best_profit:,.2f} ₽`)".replace(",", " ").replace(".", ",")
+                    f"<b>Лучшая модель по прибыли:</b> {best_label} "
+                    f"(<code>{html.escape(formatted_best_profit)}</code>)"
                 )
 
         return "\n".join(lines)

@@ -9,7 +9,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from bot.data_loader import MoexIssConfig, MoexIssDataLoader
-from bot.eval import EvaluationResult, StrategyEvaluationResult, StrategyEvaluator
+from bot.eval import BacktestWindow, EvaluationResult, StrategyEvaluationResult, StrategyEvaluator
 from bot.feature_extractor import ArtifactRegistry, FeatureExtractor, ModelName, PreparedModelDataset
 
 MOEX_HISTORY_LOOKBACK_MONTHS = 1
@@ -160,7 +160,8 @@ class PipelineConfig:
     start_date : str
         Начало периода включительно в формате, совместимом с pandas.
         История с MOEX подгружается с дополнительным месяцем назад для корректных лагов и
-        скользящих признаков; расчёт и выдача ограничиваются именно этими датами пользователя.
+        скользящих признаков; расчёт и выдача ограничиваются именно этими датами пользователя,
+        но фактическая правая граница может сдвинуться левее при отсутствии реализованной доходности.
     end_date : str
         Конец периода включительно в формате, совместимом с pandas.
     initial_capital_rub : float
@@ -198,6 +199,11 @@ class PipelineResult:
         Результат оценки со сводками, кривыми и графиками.
     chart_paths : dict[str, Path]
         Пути к сохранённым графикам по имени стратегии.
+
+    Notes
+    -----
+    Через свойство ``effective_window`` можно получить фактическое окно расчёта
+    после удаления нереализуемой правой границы и выравнивания моделей.
     """
 
     config: PipelineConfig
@@ -243,6 +249,18 @@ class PipelineResult:
             strategy_name: strategy_result.chart
             for strategy_name, strategy_result in self.evaluation.strategies.items()
         }
+
+    @property
+    def effective_window(self) -> BacktestWindow:
+        """Возвращает фактическое окно backtest после всех внутренних сужений.
+
+        Returns
+        -------
+        BacktestWindow
+            Первая и последняя дата реально рассчитанной доходности.
+        """
+
+        return self.evaluation.effective_window
 
 
 class ProductionPipeline:
@@ -375,9 +393,11 @@ def run_pipeline(
     start_date : str
         Начало периода включительно в формате, совместимом с pandas.
         К MOEX уходит запрос с датой ``from`` на месяц раньше (см. ``MOEX_HISTORY_LOOKBACK_MONTHS``);
-        кривые и сводка строятся только в запрошенном окне.
+        кривые и сводка строятся только по реализованным точкам внутри запрошенного окна.
     end_date : str
         Конец периода включительно в формате, совместимом с pandas.
+        Если для последнего календарного дня нельзя посчитать доходность следующего шага,
+        фактическая правая граница backtest будет раньше этой даты.
     initial_capital_rub : float
         Начальный баланс портфеля.
     security : str, default="SBER"

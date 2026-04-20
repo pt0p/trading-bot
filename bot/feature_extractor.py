@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -567,6 +567,12 @@ class FeatureExtractor:
         -------
         pd.Series
             Лог-доходность следующего шага.
+
+        Notes
+        -----
+        Для последней календарной строки ряда значение отсутствует, потому что
+        доходность считается через следующий бар. Такая строка затем отфильтровывается
+        на этапе сборки backtest-датасета.
         """
 
         close = market_data["LEGALCLOSEPRICE"].astype(float)

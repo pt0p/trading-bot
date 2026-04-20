@@ -1,5 +1,7 @@
 """Инференс моделей, оценка стратегий и построение графиков."""
 
+# ruff: noqa: I001
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +10,13 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+import numpy as np
+import pandas as pd
+from joblib import load as joblib_load
+
+from bot.display_labels import model_display_name
+from bot.feature_extractor import MODEL_ORDER, ModelName, PreparedModelDataset
+
 PROD_CACHE_DIR = Path(tempfile.gettempdir()) / "trading_bot_prod_cache"
 PROD_MPL_CACHE_DIR = PROD_CACHE_DIR / "mplconfig"
 PROD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -15,18 +24,28 @@ PROD_MPL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("XDG_CACHE_HOME", str(PROD_CACHE_DIR))
 os.environ.setdefault("MPLCONFIGDIR", str(PROD_MPL_CACHE_DIR))
 
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from joblib import load as joblib_load
-from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter, NullLocator
-
-from bot.display_labels import model_display_name
-from bot.feature_extractor import MODEL_ORDER, ModelName, PreparedModelDataset
+import matplotlib.dates as mdates  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.ticker import FuncFormatter, NullLocator  # noqa: E402
 
 STRATEGY_NAMES = ("cautious", "greedy")
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestWindow:
+    """Фактическое календарное окно расчёта после выравнивания датасетов.
+
+    Parameters
+    ----------
+    start_date : str
+        Первая дата backtest-периода в формате ``YYYY-MM-DD``.
+    end_date : str
+        Последняя дата backtest-периода в формате ``YYYY-MM-DD``.
+    """
+
+    start_date: str
+    end_date: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,11 +60,14 @@ class StrategyEvaluationResult:
         Кривые портфеля для всех сравниваемых моделей.
     chart : Figure
         Объект Matplotlib Figure для семейства стратегий.
+    effective_window : BacktestWindow
+        Фактическое окно backtest после выравнивания дат и удаления нереализуемых шагов.
     """
 
     summary: pd.DataFrame
     curves: pd.DataFrame
     chart: Figure
+    effective_window: BacktestWindow
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,10 +80,13 @@ class EvaluationResult:
         Вложенный словарь, готовый к сериализации в JSON, с прибылью по стратегиям и моделям.
     strategies : dict[str, StrategyEvaluationResult]
         Полные результаты по каждой стратегии.
+    effective_window : BacktestWindow
+        Общее фактическое окно backtest после выравнивания датасетов всех моделей.
     """
 
     summary_json: dict[str, dict[str, float]]
     strategies: dict[str, StrategyEvaluationResult]
+    effective_window: BacktestWindow
 
 
 class StrategyEvaluator:
@@ -89,6 +114,7 @@ class StrategyEvaluator:
 
         self._validate_initial_capital(initial_capital_rub)
         aligned = self._align_datasets(datasets)
+        effective_window = self._resolve_effective_window(aligned)
 
         cautious_curves = self._evaluate_cautious(aligned, initial_capital_rub)
         greedy_curves = self._evaluate_greedy(aligned, initial_capital_rub)
@@ -97,11 +123,13 @@ class StrategyEvaluator:
             strategy_name="cautious",
             curves_by_model=cautious_curves,
             initial_capital_rub=initial_capital_rub,
+            effective_window=effective_window,
         )
         greedy_result = self._build_strategy_result(
             strategy_name="greedy",
             curves_by_model=greedy_curves,
             initial_capital_rub=initial_capital_rub,
+            effective_window=effective_window,
         )
 
         summary_json = {
@@ -114,6 +142,33 @@ class StrategyEvaluator:
                 "cautious": cautious_result,
                 "greedy": greedy_result,
             },
+            effective_window=effective_window,
+        )
+
+    def _resolve_effective_window(
+        self,
+        datasets: dict[ModelName, PreparedModelDataset],
+    ) -> BacktestWindow:
+        """Определяет фактическое окно расчёта по уже выровненным датасетам.
+
+        Parameters
+        ----------
+        datasets : dict[ModelName, PreparedModelDataset]
+            Датасеты после пересечения общего набора дат между моделями.
+
+        Returns
+        -------
+        BacktestWindow
+            Первая и последняя дата фактического backtest-периода.
+        """
+
+        reference_times = datasets["linear_regression"].dataset["time"].astype(str).reset_index(drop=True)
+        if reference_times.empty:
+            msg = "Aligned datasets do not contain any backtest timestamps"
+            raise ValueError(msg)
+        return BacktestWindow(
+            start_date=str(reference_times.iloc[0]),
+            end_date=str(reference_times.iloc[-1]),
         )
 
     def _align_datasets(
@@ -184,7 +239,11 @@ class StrategyEvaluator:
             prepared = datasets[model_name]
             model = self._load_model(prepared.artifact.model_path)
             if model_name == "linear_regression":
-                raw_predictions = self._predict_numeric(model, prepared.feature_frame, model_path=prepared.artifact.model_path)
+                raw_predictions = self._predict_numeric(
+                    model,
+                    prepared.feature_frame,
+                    model_path=prepared.artifact.model_path,
+                )
                 probabilities = self._sigmoid(raw_predictions)
                 curve = self._simulate_proportional(
                     returns=prepared.dataset["return_t"].to_numpy(dtype=float, copy=False),
@@ -243,7 +302,11 @@ class StrategyEvaluator:
             prepared = datasets[model_name]
             model = self._load_model(prepared.artifact.model_path)
             if model_name == "linear_regression":
-                raw_predictions = self._predict_numeric(model, prepared.feature_frame, model_path=prepared.artifact.model_path)
+                raw_predictions = self._predict_numeric(
+                    model,
+                    prepared.feature_frame,
+                    model_path=prepared.artifact.model_path,
+                )
                 bullish = raw_predictions >= 0.0
             else:
                 probabilities = self._predict_positive_proba(
@@ -274,6 +337,7 @@ class StrategyEvaluator:
         strategy_name: str,
         curves_by_model: dict[str, pd.DataFrame],
         initial_capital_rub: float,
+        effective_window: BacktestWindow,
     ) -> StrategyEvaluationResult:
         """Собирает сводку и график для одного семейства стратегий.
 
@@ -285,6 +349,8 @@ class StrategyEvaluator:
             Кривые портфеля для всех сравниваемых моделей.
         initial_capital_rub : float
             Начальный баланс портфеля.
+        effective_window : BacktestWindow
+            Фактическое окно расчёта, общее для всех кривых после выравнивания.
 
         Returns
         -------
@@ -298,8 +364,17 @@ class StrategyEvaluator:
             for curve_df in curves_by_model.values()
         ]
         summary = pd.DataFrame(summary_rows)
-        chart = self._build_portfolio_chart(curves, strategy_name=strategy_name, initial_capital_rub=initial_capital_rub)
-        return StrategyEvaluationResult(summary=summary, curves=curves, chart=chart)
+        chart = self._build_portfolio_chart(
+            curves,
+            strategy_name=strategy_name,
+            initial_capital_rub=initial_capital_rub,
+        )
+        return StrategyEvaluationResult(
+            summary=summary,
+            curves=curves,
+            chart=chart,
+            effective_window=effective_window,
+        )
 
     def _summary_to_profit_map(self, summary: pd.DataFrame) -> dict[str, float]:
         """Преобразует сводную таблицу в JSON-готовую карту прибыли.
@@ -815,4 +890,4 @@ class StrategyEvaluator:
             raise ValueError(msg)
 
 
-__all__ = ["EvaluationResult", "STRATEGY_NAMES", "StrategyEvaluationResult", "StrategyEvaluator"]
+__all__ = ["BacktestWindow", "EvaluationResult", "STRATEGY_NAMES", "StrategyEvaluationResult", "StrategyEvaluator"]
