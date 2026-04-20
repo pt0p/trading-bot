@@ -785,7 +785,7 @@ class TradingTelegramBot:
 
         for strategy_key, profits in result.evaluation.summary_json.items():
             strategy_label = html.escape(strategy_display_name(strategy_key))
-            lines.append(f"\nСтратегия «{strategy_label}»:")
+            lines.append(f"\n💼 Стратегия «{strategy_label}»:")
             if not profits:
                 lines.append("  (нет данных)")
                 continue
@@ -802,7 +802,7 @@ class TradingTelegramBot:
                 best_label = html.escape(model_display_name(best_model_key))
                 formatted_best_profit = f"{best_profit:,.2f} ₽".replace(",", " ").replace(".", ",")
                 lines.append(
-                    f"<b>Лучшая модель по прибыли:</b> {best_label} "
+                    f"🦾 <b>Лучшая модель по прибыли:</b> {best_label} "
                     f"(<code>{html.escape(formatted_best_profit)}</code>)"
                 )
 
