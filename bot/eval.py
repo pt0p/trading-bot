@@ -23,6 +23,7 @@ from joblib import load as joblib_load
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, NullLocator
 
+from bot.display_labels import model_display_name
 from bot.feature_extractor import MODEL_ORDER, ModelName, PreparedModelDataset
 
 STRATEGY_NAMES = ("cautious", "greedy")
@@ -720,7 +721,7 @@ class StrategyEvaluator:
             axis.plot(
                 ordered["time"].to_numpy(copy=False),
                 ordered["portfolio_value_rub"].to_numpy(copy=False),
-                label=model_name,
+                label=model_display_name(str(model_name)),
             )
 
         axis.axhline(
@@ -730,7 +731,6 @@ class StrategyEvaluator:
             linewidth=1.2,
             zorder=0,
         )
-        axis.set_title(f"{strategy_name.capitalize()} strategy portfolio curves")
         axis.set_xlabel("Дата")
         axis.set_ylabel("Баланс портфеля, RUB")
         axis.yaxis.set_major_formatter(FuncFormatter(self._format_balance_thousands))

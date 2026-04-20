@@ -24,6 +24,7 @@ from telegram.ext import (
     filters,
 )
 
+from bot.display_labels import model_display_name, strategy_display_name
 from bot.main import PipelineResult, run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -629,7 +630,7 @@ class TradingTelegramBot:
         if cautious is None or greedy is None:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Расчёт выполнен, но отсутствуют ожидаемые стратегии cautious/greedy.",
+                text="Расчёт выполнен, но отсутствуют ожидаемые результаты по стратегиям «Осторожная» и «Жадная».",
             )
             return ConversationHandler.END
 
@@ -637,13 +638,13 @@ class TradingTelegramBot:
             context=context,
             chat_id=chat_id,
             figure=cautious.chart,
-            caption="Стратегия cautious: кривые портфеля по моделям",
+            caption=f"Стратегия «{strategy_display_name('cautious')}»: кривые портфеля по моделям",
         )
         await self._send_strategy_chart(
             context=context,
             chat_id=chat_id,
             figure=greedy.chart,
-            caption="Стратегия greedy: кривые портфеля по моделям",
+            caption=f"Стратегия «{strategy_display_name('greedy')}»: кривые портфеля по моделям",
         )
 
         profit_text = self._format_profit_summary(result.evaluation.summary_json)
@@ -700,22 +701,25 @@ class TradingTelegramBot:
             Текст сообщения для пользователя.
         """
 
-        lines: list[str] = ["Сводка прибыли (руб., по моделям):"]
+        lines: list[str] = ["📈 *СВОДКА ПРИБЫЛИ!*:"]
         for strategy_key, profits in summary_json.items():
-            lines.append(f"\nСтратегия «{strategy_key}»:")
+            strategy_label = strategy_display_name(strategy_key)
+            lines.append(f"\nСтратегия «{strategy_label}»:")
             if not profits:
                 lines.append("  (нет данных)")
                 continue
-            best_model: str | None = None
+            best_model_key: str | None = None
             best_profit: float | None = None
-            for model_name, profit in profits.items():
-                lines.append(f"  • {model_name}: {profit:,.2f} ₽".replace(",", " "))
+            for model_key, profit in profits.items():
+                model_label = model_display_name(str(model_key))
+                lines.append(f"  • {model_label}: `{profit:,.2f} ₽`".replace(",", " ").replace(".", ","))
                 if best_profit is None or float(profit) > float(best_profit):
                     best_profit = float(profit)
-                    best_model = str(model_name)
-            if best_model is not None and best_profit is not None:
+                    best_model_key = str(model_key)
+            if best_model_key is not None and best_profit is not None:
+                best_label = model_display_name(best_model_key)
                 lines.append(
-                    f"  Лучшая модель по прибыли: {best_model} ({best_profit:,.2f} ₽)".replace(",", " ")
+                    f"*Лучшая модель по прибыли:* {best_label} (`{best_profit:,.2f} ₽`)".replace(",", " ").replace(".", ",")
                 )
 
         return "\n".join(lines)
