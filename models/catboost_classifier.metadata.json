@@ -1,0 +1,43 @@
+{
+  "model": "catboost_classifier",
+  "feature_config_name": "notebook_lag3",
+  "target_column": "target",
+  "feature_columns": [
+    "open",
+    "low",
+    "high",
+    "close_lag_1",
+    "close_lag_2",
+    "close_lag_3",
+    "log_return_lag_1"
+  ],
+  "model_details": {
+    "representation": "features_used_by_catboost",
+    "feature_columns": [
+      "open",
+      "low",
+      "high",
+      "close_lag_1",
+      "close_lag_2",
+      "close_lag_3",
+      "log_return_lag_1"
+    ],
+    "used_features": [
+      "open",
+      "low",
+      "high",
+      "close_lag_1",
+      "close_lag_2",
+      "close_lag_3",
+      "log_return_lag_1"
+    ]
+  },
+  "saved_target_columns": [
+    "target",
+    "target_log_return",
+    "target_price"
+  ],
+  "artifacts": {
+    "model_path": "models/catboost_classifier.cbm"
+  }
+}

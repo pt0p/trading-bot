@@ -1,0 +1,65 @@
+{
+  "model": "logistic_regression",
+  "feature_config_name": "notebook_lag3",
+  "target_column": "target",
+  "feature_columns": [
+    "open",
+    "low",
+    "high",
+    "close_lag_1",
+    "close_lag_2",
+    "close_lag_3",
+    "log_return_lag_1"
+  ],
+  "model_details": {
+    "representation": "original_feature_space_back_transformed_from_standard_scaler",
+    "intercept": 0.775797,
+    "feature_coefficients": [
+      {
+        "feature": "open",
+        "coefficient": -0.098513
+      },
+      {
+        "feature": "low",
+        "coefficient": 0.035478
+      },
+      {
+        "feature": "high",
+        "coefficient": 0.08218
+      },
+      {
+        "feature": "close_lag_1",
+        "coefficient": -0.013523
+      },
+      {
+        "feature": "close_lag_2",
+        "coefficient": 0.001868
+      },
+      {
+        "feature": "close_lag_3",
+        "coefficient": -0.010118
+      },
+      {
+        "feature": "log_return_lag_1",
+        "coefficient": -3.918959
+      }
+    ],
+    "features_used": [
+      "open",
+      "low",
+      "high",
+      "close_lag_1",
+      "close_lag_2",
+      "close_lag_3",
+      "log_return_lag_1"
+    ]
+  },
+  "saved_target_columns": [
+    "target",
+    "target_log_return",
+    "target_price"
+  ],
+  "artifacts": {
+    "model_path": "models/logistic_regression.joblib"
+  }
+}

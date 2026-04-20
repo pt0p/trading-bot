@@ -1,0 +1,81 @@
+[tool.poetry]
+name="trading-bot"
+version='0.1.0'
+description=""
+authors = ["pt0p"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python="^3.11"
+pandas = "^2.3.3"
+requests = "^2.32.5"
+matplotlib = "^3.10.8"
+scikit-learn = "^1.8.0"
+tqdm = "^4.67.1"
+ipywidgets = "^8.1.8"
+catboost = "^1.2.8"
+python-telegram-bot = "^22.7"
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.13.0"
+types-python-dateutil = "^2.8.19.6"
+types-psycopg2 = "^2.9.21.8"
+types-requests = "^2.28.11.2"
+ruff = "^0.8.1"
+pandas-stubs = "^2.2.3.241126"
+ipykernel = "^7.2.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.mypy]
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unused_configs = true
+warn_unreachable = true
+exclude = ["analytics", "web", "venv", "venv-analytics"]
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "catboost.*"]
+ignore_missing_imports = true
+
+[tool.ruff.lint]
+select = [
+    "E", # pycodestyle error
+    "W", # pycodestyle warning
+    "F", # pyflakes
+    "I", # isort
+    "N", # pep8-namings
+    "C", # flake8-comprehensions
+    "G", # flake8-logging-format
+    "DTZ", # flake8-datetimetz
+    "T20", # flake8-print
+    "PL",  # pylint
+]
+ignore = [
+    "C901",    # too complex
+    "C401",    # unnecessary generator (rewrite as a `set` comprehension)
+    "C402",    # unnecessary generator (rewrite as a `dict` comprehension)
+    "PLR0911", # too many return statements
+    "PLR0912", # too many branches 
+    "PLR0913", # too many arguments in function definition
+    "PLR2004", # magic value used in comparison
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = false
+
+[tool.ruff.lint.isort]
+combine-as-imports = true

@@ -1,0 +1,9 @@
+.venv/
+.cursorignore
+AGENTS.md
+poetry.lock
+.env
+.DS_Store
+.*_cache/
+__pycache__/
+.python-version
