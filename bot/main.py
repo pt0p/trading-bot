@@ -10,7 +10,145 @@ from matplotlib.figure import Figure
 
 from bot.data_loader import MoexIssConfig, MoexIssDataLoader
 from bot.eval import EvaluationResult, StrategyEvaluationResult, StrategyEvaluator
-from bot.feature_extractor import ArtifactRegistry, FeatureExtractor
+from bot.feature_extractor import ArtifactRegistry, FeatureExtractor, ModelName, PreparedModelDataset
+
+MOEX_HISTORY_LOOKBACK_MONTHS = 1
+
+
+def _to_iso_date(value: str) -> str:
+    """Преобразует дату в строку ``YYYY-MM-DD`` для сравнения с полями датасетов.
+
+    Parameters
+    ----------
+    value : str
+        Дата в формате, совместимом с :class:`pandas.Timestamp`.
+
+    Returns
+    -------
+    str
+        Календарная дата в ISO-8601.
+    """
+
+    ts = pd.Timestamp(value)
+    if pd.isna(ts):
+        msg = f"Invalid date value: {value!r}"
+        raise ValueError(msg)
+    return ts.date().isoformat()
+
+
+def _moex_fetch_start_date(user_start_date: str, *, lookback_months: int) -> str:
+    """Сдвигает дату начала запроса к MOEX назад на ``lookback_months`` для прогрева лагов.
+
+    Parameters
+    ----------
+    user_start_date : str
+        Нижняя граница периода, заданного пользователем (включительно).
+    lookback_months : int
+        Число календарных месяцев, на которое расширяется окно загрузки.
+
+    Returns
+    -------
+    str
+        Дата ``from`` для запроса ISS в ISO-8601 (не позже необходимого минимума биржевой истории).
+
+    Raises
+    ------
+    ValueError
+        Если ``user_start_date`` не удаётся распарсить.
+
+    Notes
+    -----
+    Рыночные данные за расширенное окно используются только для корректных лагов и rolling.
+    Отчётная зона пользователя задаётся отдельным обрезанием после построения фичей.
+
+    """
+
+    anchor = pd.Timestamp(user_start_date)
+    if pd.isna(anchor):
+        msg = f"Invalid date value: {user_start_date!r}"
+        raise ValueError(msg)
+    expanded = anchor - pd.DateOffset(months=lookback_months)
+    return expanded.date().isoformat()
+
+
+def _trim_market_data_to_window(
+    market_data: pd.DataFrame,
+    *,
+    start_iso: str,
+    end_iso: str,
+) -> pd.DataFrame:
+    """Оставляет строки ``TRADEDATE`` внутри ``[start_iso, end_iso]``.
+
+    Parameters
+    ----------
+    market_data : pd.DataFrame
+        Нормализованный фрейм загрузчика MOEX ISS.
+    start_iso : str
+        Начало включительно, ``YYYY-MM-DD``.
+    end_iso : str
+        Конец включительно, ``YYYY-MM-DD``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Отфильтрованный и переиндексированный фрейм.
+
+    Raises
+    ------
+    ValueError
+        Если после фильтрации данных не осталось.
+
+    """
+
+    dates = market_data["TRADEDATE"].astype(str)
+    mask = (dates >= start_iso) & (dates <= end_iso)
+    trimmed = market_data.loc[mask].reset_index(drop=True)
+    if trimmed.empty:
+        msg = f"No market rows in requested window [{start_iso}, {end_iso}]"
+        raise ValueError(msg)
+    return trimmed
+
+
+def _trim_prepared_datasets_to_window(
+    datasets: dict[ModelName, PreparedModelDataset],
+    *,
+    start_iso: str,
+    end_iso: str,
+) -> dict[ModelName, PreparedModelDataset]:
+    """Обрезает подготовленные датасеты по календарному окну пользователя.
+
+    Parameters
+    ----------
+    datasets : dict[ModelName, PreparedModelDataset]
+        Датасеты после полного построения фичей на расширенной истории.
+    start_iso : str
+        Начало включительно.
+    end_iso : str
+        Конец включительно.
+
+    Returns
+    -------
+    dict[ModelName, PreparedModelDataset]
+        Новые обёртки с урезанными ``dataset``.
+
+    Raises
+    ------
+    ValueError
+        Если для какой-либо модели в окне не осталось строк.
+
+    """
+
+    trimmed: dict[ModelName, PreparedModelDataset] = {}
+    for model_name, prepared in datasets.items():
+        frame = prepared.dataset.copy()
+        times = frame["time"].astype(str)
+        mask = (times >= start_iso) & (times <= end_iso)
+        filtered = frame.loc[mask].sort_values("time").reset_index(drop=True)
+        if filtered.empty:
+            msg = f"No feature rows in requested window [{start_iso}, {end_iso}] " f"for model {model_name!r}"
+            raise ValueError(msg)
+        trimmed[model_name] = PreparedModelDataset(artifact=prepared.artifact, dataset=filtered)
+    return trimmed
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,13 +159,15 @@ class PipelineConfig:
     ----------
     start_date : str
         Начало периода включительно в формате, совместимом с pandas.
+        История с MOEX подгружается с дополнительным месяцем назад для корректных лагов и
+        скользящих признаков; расчёт и выдача ограничиваются именно этими датами пользователя.
     end_date : str
         Конец периода включительно в формате, совместимом с pandas.
     initial_capital_rub : float
         Начальный баланс портфеля.
     security : str, default="SBER"
         Тикер инструмента для загрузки из MOEX ISS.
-    artifacts_dir : str or Path, default="experiments_2/best_models"
+    artifacts_dir : str or Path, default="models"
         Директория с metadata и сериализованными моделями.
     output_dir : str or Path or None, optional
         Необязательная директория для сохранения построенных графиков.
@@ -53,7 +193,7 @@ class PipelineResult:
     config : PipelineConfig
         Итоговая конфигурация пайплайна.
     market_data : pd.DataFrame
-        Загруженные и нормализованные рыночные данные.
+        Рыночные данные только в окне ``start_date``–``end_date`` из конфигурации (без месяца прогрева).
     evaluation : EvaluationResult
         Результат оценки со сводками, кривыми и графиками.
     chart_paths : dict[str, Path]
@@ -148,16 +288,33 @@ class ProductionPipeline:
         if config.moex_config is not None:
             effective_loader = MoexIssDataLoader(config=config.moex_config)
 
-        market_data = effective_loader.load_history(
+        user_start_iso = _to_iso_date(config.start_date)
+        user_end_iso = _to_iso_date(config.end_date)
+        fetch_start_iso = _moex_fetch_start_date(
+            user_start_iso,
+            lookback_months=MOEX_HISTORY_LOOKBACK_MONTHS,
+        )
+
+        market_data_full = effective_loader.load_history(
             security=config.security,
-            start_date=config.start_date,
-            end_date=config.end_date,
+            start_date=fetch_start_iso,
+            end_date=user_end_iso,
         )
         registry = ArtifactRegistry.from_directory(config.artifacts_dir)
-        prepared_datasets = self._feature_extractor.build_datasets(market_data, registry)
+        prepared_full = self._feature_extractor.build_datasets(market_data_full, registry)
+        prepared_datasets = _trim_prepared_datasets_to_window(
+            prepared_full,
+            start_iso=user_start_iso,
+            end_iso=user_end_iso,
+        )
         evaluation = self._strategy_evaluator.evaluate(
             datasets=prepared_datasets,
             initial_capital_rub=config.initial_capital_rub,
+        )
+        market_data = _trim_market_data_to_window(
+            market_data_full,
+            start_iso=user_start_iso,
+            end_iso=user_end_iso,
         )
         chart_paths = self._save_charts(evaluation, output_dir=config.output_dir)
         return PipelineResult(
@@ -217,13 +374,15 @@ def run_pipeline(
     ----------
     start_date : str
         Начало периода включительно в формате, совместимом с pandas.
+        К MOEX уходит запрос с датой ``from`` на месяц раньше (см. ``MOEX_HISTORY_LOOKBACK_MONTHS``);
+        кривые и сводка строятся только в запрошенном окне.
     end_date : str
         Конец периода включительно в формате, совместимом с pandas.
     initial_capital_rub : float
         Начальный баланс портфеля.
     security : str, default="SBER"
         Тикер инструмента для загрузки из MOEX ISS.
-    artifacts_dir : str or Path, default="experiments_2/best_models"
+    artifacts_dir : str or Path, default="models"
         Директория с metadata и сериализованными моделями.
     output_dir : str or Path or None, optional
         Необязательная директория для сохранения построенных графиков.
@@ -249,4 +408,10 @@ def run_pipeline(
     return pipeline.run(config)
 
 
-__all__ = ["PipelineConfig", "PipelineResult", "ProductionPipeline", "run_pipeline"]
+__all__ = [
+    "MOEX_HISTORY_LOOKBACK_MONTHS",
+    "PipelineConfig",
+    "PipelineResult",
+    "ProductionPipeline",
+    "run_pipeline",
+]
