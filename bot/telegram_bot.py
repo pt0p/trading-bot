@@ -10,6 +10,7 @@ from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Final
+from urllib.parse import urlparse
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -57,6 +58,114 @@ def _require_user_data(context: ContextTypes.DEFAULT_TYPE) -> dict[Any, Any]:
 ASK_START_DATE: Final[int] = 1
 ASK_END_DATE: Final[int] = 2
 ASK_CAPITAL: Final[int] = 3
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookServerConfig:
+    """Параметры HTTP-сервера и webhook для ``Application.run_webhook``.
+
+    Parameters
+    ----------
+    listen : str
+        Адрес привязки сокета (например ``0.0.0.0`` или ``127.0.0.1``).
+    port : int
+        Порт локального сервера, на который проксируются запросы Telegram.
+    url_path : str
+        Относительный путь без начального слэша (совпадает с путём из публичного ``webhook_url``).
+    webhook_url : str
+        Полный HTTPS URL, передаваемый в Telegram ``setWebhook``.
+    secret_token : str or None
+        Опциональный секретный токен для заголовка ``X-Telegram-Bot-Api-Secret-Token``.
+    cert : pathlib.Path or None
+        Опциональный файл сертификата TLS для HTTPS на процессе.
+    key : pathlib.Path or None
+        Опциональный файл ключа TLS для HTTPS на процессе.
+    """
+
+    listen: str
+    port: int
+    url_path: str
+    webhook_url: str
+    secret_token: str | None = None
+    cert: Path | None = None
+    key: Path | None = None
+
+
+def parse_webhook_config_from_env() -> WebhookServerConfig:
+    """Читает конфигурацию webhook из переменных окружения.
+
+    Ожидается:
+
+    - ``WEBHOOK_URL`` — полный публичный URL для ``setWebhook`` (обязательно);
+    - ``WEBHOOK_LISTEN_HOST`` — хост привязки (по умолчанию ``0.0.0.0``);
+    - ``WEBHOOK_LISTEN_PORT`` — порт процесса (обязательно);
+    - ``WEBHOOK_SECRET_TOKEN`` — необязательный секрет Telegram;
+    - ``WEBHOOK_CERT_PATH``, ``WEBHOOK_KEY_PATH`` — необязательные пути к PEM для TLS на процессе
+      (если задан один, нужен и второй).
+
+    Returns
+    -------
+    WebhookServerConfig
+        Готовые параметры для ``Application.run_webhook``.
+
+    Raises
+    ------
+    ValueError
+        Если отсутствует обязательное поле или комбинация параметров некорректна.
+    """
+
+    raw_webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
+    if not raw_webhook_url:
+        msg = "Переменная окружения WEBHOOK_URL не задана или пуста."
+        raise ValueError(msg)
+
+    parsed_url = urlparse(raw_webhook_url)
+    if parsed_url.scheme.lower() != "https":
+        msg = "WEBHOOK_URL должен использовать схему https (требование Telegram Bot API)."
+        raise ValueError(msg)
+
+    raw_path = (parsed_url.path or "/").strip("/")
+    url_path = raw_path if raw_path else "webhook"
+
+    listen_host = os.environ.get("WEBHOOK_LISTEN_HOST", "0.0.0.0").strip()
+    if not listen_host:
+        msg = "WEBHOOK_LISTEN_HOST не может быть пустым."
+        raise ValueError(msg)
+
+    port_raw = os.environ.get("WEBHOOK_LISTEN_PORT", "").strip()
+    if not port_raw:
+        msg = "Переменная окружения WEBHOOK_LISTEN_PORT обязательна (целое число)."
+        raise ValueError(msg)
+    try:
+        listen_port = int(port_raw)
+    except ValueError as exc:
+        msg = f"WEBHOOK_LISTEN_PORT должно быть целым числом, получено {port_raw!r}."
+        raise ValueError(msg) from exc
+    if not (1 <= listen_port <= 65535):
+        msg = "WEBHOOK_LISTEN_PORT должно быть в диапазоне 1–65535."
+        raise ValueError(msg)
+
+    secret_raw = os.environ.get("WEBHOOK_SECRET_TOKEN")
+    secret_token = secret_raw.strip() if secret_raw and secret_raw.strip() else None
+
+    cert_raw = os.environ.get("WEBHOOK_CERT_PATH", "").strip()
+    key_raw = os.environ.get("WEBHOOK_KEY_PATH", "").strip()
+    cert_path: Path | None = Path(cert_raw).resolve() if cert_raw else None
+    key_path: Path | None = Path(key_raw).resolve() if key_raw else None
+
+    if (cert_path is None) ^ (key_path is None):
+        msg = "Задайте оба параметра WEBHOOK_CERT_PATH и WEBHOOK_KEY_PATH или ни одного."
+        raise ValueError(msg)
+
+    return WebhookServerConfig(
+        listen=listen_host,
+        port=listen_port,
+        url_path=url_path,
+        webhook_url=raw_webhook_url,
+        secret_token=secret_token,
+        cert=cert_path,
+        key=key_path,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,11 +355,26 @@ class TradingTelegramBot:
         application.add_handler(run_conversation)
         return application
 
-    def run_polling_sync(self) -> None:
-        """Синхронная обёртка над ``run_polling`` для точки входа CLI."""
+    def run_webhook_sync(self, webhook_config: WebhookServerConfig) -> None:
+        """Запускает бота в режиме webhook (HTTP-сервер и вызов ``setWebhook``).
+
+        Parameters
+        ----------
+        webhook_config : WebhookServerConfig
+            Параметры привязки и URL, передаваемые в ``Application.run_webhook``.
+        """
 
         application = self.build_application()
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.run_webhook(
+            listen=webhook_config.listen,
+            port=webhook_config.port,
+            url_path=webhook_config.url_path,
+            webhook_url=webhook_config.webhook_url,
+            allowed_updates=Update.ALL_TYPES,
+            secret_token=webhook_config.secret_token,
+            cert=str(webhook_config.cert) if webhook_config.cert is not None else None,
+            key=str(webhook_config.key) if webhook_config.key is not None else None,
+        )
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обрабатывает команду ``/start``: краткая справка по командам.
@@ -665,6 +789,8 @@ __all__ = [
     "ASK_START_DATE",
     "TradingTelegramBot",
     "UserValidator",
+    "WebhookServerConfig",
     "parse_user_date",
+    "parse_webhook_config_from_env",
     "trading_bot_from_env",
 ]
